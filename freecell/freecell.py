@@ -1,4 +1,9 @@
 '''Freecell core code'''
+from random import shuffle
+from copy import deepcopy
+from typing import Iterator, List, Union, Tuple
+from queue import PriorityQueue
+import itertools
 
 class InvalidCardSuit(Exception):
     '''InvalidCardSuit'''
@@ -116,7 +121,7 @@ class Foundation:
 
 class Move:
     '''Definition of a move'''
-    # add precendence and sort moves by precednce?
+    # add precendence and sort moves by precedence?
     def __init__(self, from_location:str, from_index:int, to_location:str, to_index:int, move_depth:int=1) -> None:
         self.from_location = from_location
         self.from_index = from_index
@@ -142,46 +147,28 @@ class Move:
     def __repr__(self) -> str:
         return f'Move from {self.from_location} {self.from_index} to {self.to_location} {self.to_index} depth {self.move_depth}'
 
-from random import shuffle
-from copy import deepcopy
-from typing import Union, Tuple
-from queue import PriorityQueue
-import itertools
 
 class FreeCell:
     '''Freecell game code'''
     n_free_cells = 4
     suits = ['spade', 'heart', 'club', 'diamond']
+    parent = None
 
-    def __init__(self, board=None, foundations=None, free_spaces=None) -> None:
-
-        # move to create() or deal()
-        if isinstance(board, list):
-            self.board = board or [[] for _ in range(8)]
-        else:
-            self.board = [[] for _ in range(8)]
-            cards = set()
-            for line in board.splitlines():
-                for column_index, card_str in enumerate(line.split(' ')):
-                    self.board[column_index].append(Card.from_string(card_str))
-                    cards.add(str(card_str))
-            if len(cards) != 52:
-                raise Exception(f'Bad deck size: {len(cards)}')
-
+    def __init__(self, board:List[List[Card]]=None, foundations:List[Foundation]=None, free_spaces:List[Card]=None) -> None:
+        self.board = board
         self.foundations = foundations or [Foundation(suit) for suit in self.suits]
         self.free_spaces = free_spaces or [None] * self.n_free_cells
-        self.previous_game_hashes = []
-        if not board:
-            deck = [] # unnecessary state
-            for suit in ['spade', 'heart', 'club', 'diamond']:
-                for value in range(1,14):
-                    deck.append(Card(value, suit))
-            shuffle(deck)
+        # if not board:
+        #     deck = [] # unnecessary state
+        #     for suit in ['spade', 'heart', 'club', 'diamond']:
+        #         for value in range(1,14):
+        #             deck.append(Card(value, suit))
+        #     shuffle(deck)
 
-            for i, card in enumerate(deck):
-                self.board[i % 8].append(card)
+        #     for i, card in enumerate(deck):
+                # self.board[i % 8].append(card)
 
-    def get_moves(self):
+    def get_moves(self) -> Iterator[Move]:
         '''Get all moves given the current game state'''
         all_moves = []
         # get all free space and foundation moves
@@ -248,9 +235,9 @@ class FreeCell:
                 else:
                     all_moves.append(Move('free_space', free_space_index, 'board', to_col_index))
 
-        return sorted(all_moves, key=lambda m: m.priority)
+        return sorted(all_moves, key=lambda m: (-m.move_depth, m.priority))
 
-    def execute_move(self, move:Move):
+    def execute_move(self, move:Move) -> None:
         if move.from_location == 'board' and move.to_location == 'board':
             self.board[move.to_index].extend(self.board[move.from_index][-move.move_depth:])
             self.board[move.from_index] = self.board[move.from_index][:-move.move_depth:]
@@ -279,22 +266,24 @@ class FreeCell:
 
     def solve(self) -> bool:
         '''Solve the game'''
-        visited = set() # List to keep track of visited nodes.
-        # queue = []     # Initialize a queue
-        # stack = deque([self.copy()])
+        visited = set()
+        # counter is used to break ties in priority queue
         counter = itertools.count()
         pqueue = PriorityQueue()
         pqueue.put((1, 1, self.copy()))
         count = 0
         while pqueue:
-
             _, _, state = pqueue.get()
             state_hash = state.generate_hash()
 
             if state.check_win():
                 state.show()
-                print('HOLY SHIT')
-                return 'HOLY SHIT I WON'
+                solution = []
+                parent = state.parent
+                while parent:
+                    solution.append(parent)
+                    parent = parent.parent
+                return list(reversed(solution))
 
             if state_hash in visited:
                 continue
@@ -307,6 +296,7 @@ class FreeCell:
             visited.add(state_hash)
             for move in state.get_moves():
                 clone = state.copy()
+                clone.parent = state
                 clone.execute_move(move)
                 clone_hash = clone.generate_hash()
                 if clone_hash not in visited:
@@ -319,11 +309,11 @@ class FreeCell:
         num_free_spaces = self.free_spaces.count(None)
         return (2**num_free_columns) * (num_free_spaces + 1)
 
-    def generate_hash(self):
+    def generate_hash(self) -> str:
         # return hashlib.sha256((str(self.free_spaces) + str(self.foundations) + str(self.board)).encode('utf-8')).hexdigest()
         return hash(str(self.free_spaces) + str(self.foundations) + str(self.board))
 
-    def show(self):
+    def show(self) -> None:
         '''Print the board'''
         print(''.join('[ ]' if space is None else str(space) for space in self.free_spaces) + '|' + ''.join(str(f) for f in self.foundations))
         print('='*25)
@@ -339,10 +329,19 @@ class FreeCell:
                     row.append(str(column[row_index]))
             print(''.join(row))
 
-    def copy(self):
-        return deepcopy(self)
+    # def __deepcopy__(self, memodict={}):
+    #     copy_object = FreeCell()
+    #     copy_object.board = self.board.copy()
+    #     copy_object.foundations = self.foundations.copy()
+    #     copy_object.free_spaces = self.free_spaces.copy()
+    #     return copy_object
 
-    def parse_move(self, move_string):
+    def copy(self):
+        # return deepcopy(self)
+        # return FreeCell(board=ujson.loads(ujson.dumps(self.board)), foundations=ujson.loads(ujson.dumps(self.foundations)), free_spaces=ujson.loads(ujson.dumps(self.free_spaces)))
+        return FreeCell(board=deepcopy(self.board), foundations=deepcopy(self.foundations), free_spaces=deepcopy(self.free_spaces))
+
+    def parse_move(self, move_string:str) -> Move:
         '''Parses a move from command line input'''
         if len(move_string) != 2:
             raise MoveParserException(f'Move {move_string} not recognized')
@@ -479,7 +478,7 @@ class FreeCell:
             return is_valid, reason
         return is_valid
 
-    def score(self):
+    def score(self) -> int:
         '''Generate a score for the current game state'''
         score = 0
         for foundation in self.foundations:
@@ -496,7 +495,7 @@ class FreeCell:
                 score += 5
         return score
 
-    def play(self):
+    def play(self) -> None:
         '''Play a command line version of the game'''
         n_moves = 0
         while not self.check_win():
@@ -524,8 +523,22 @@ class FreeCell:
 if __name__ == "__main__":
     with open('boards/board1.txt') as fh:
         board_data = fh.read()
+    board = [[] for _ in range(8)]
+    cards = set()
+    for line in board_data.splitlines():
+        for column_index, card_str in enumerate(line.split(' ')):
+            board[column_index].append(Card.from_string(card_str))
+            cards.add(str(card_str))
+    if len(cards) != 52:
+        raise Exception(f'Bad deck size: {len(cards)}')
 
-    game = FreeCell(board=board_data)
+    game = FreeCell(board=board)
+
     # game.play()
     game.show()
-    game.solve()
+    solution = game.solve()
+    print('SOLUTION', len(solution))
+    for state in solution:
+        state.show()
+        print('*************************')
+        _ = input()
