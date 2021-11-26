@@ -1,9 +1,11 @@
 '''Freecell core code'''
-from random import shuffle
+import argparse
 from copy import deepcopy
-from typing import Iterator, List, Union, Tuple
-from queue import PriorityQueue
 import itertools
+from queue import PriorityQueue
+from random import shuffle
+import time
+from typing import Iterator, List, Union, Tuple
 
 class InvalidCardSuit(Exception):
     '''InvalidCardSuit'''
@@ -59,6 +61,7 @@ class Card:
 
     @classmethod
     def from_string(cls, string_representation:str):
+        '''Create a card from a string'''
         num_lookup = {
             'A': 1,
             'T': 10,
@@ -119,6 +122,9 @@ class Foundation:
         '''Withdraws a card from the top of the foundation stack'''
         return self.stack.pop()
 
+    def ncards(self) -> int:
+        '''Return the number of cards in the foundation'''
+        return len(self.stack)
 class Move:
     '''Definition of a move'''
     # add precendence and sort moves by precedence?
@@ -147,7 +153,6 @@ class Move:
     def __repr__(self) -> str:
         return f'Move from {self.from_location} {self.from_index} to {self.to_location} {self.to_index} depth {self.move_depth}'
 
-
 class FreeCell:
     '''Freecell game code'''
     n_free_cells = 4
@@ -158,15 +163,6 @@ class FreeCell:
         self.board = board
         self.foundations = foundations or [Foundation(suit) for suit in self.suits]
         self.free_spaces = free_spaces or [None] * self.n_free_cells
-        # if not board:
-        #     deck = [] # unnecessary state
-        #     for suit in ['spade', 'heart', 'club', 'diamond']:
-        #         for value in range(1,14):
-        #             deck.append(Card(value, suit))
-        #     shuffle(deck)
-
-        #     for i, card in enumerate(deck):
-                # self.board[i % 8].append(card)
 
     def get_moves(self) -> Iterator[Move]:
         '''Get all moves given the current game state'''
@@ -209,7 +205,6 @@ class FreeCell:
 
                 for to_col_index, to_column in enumerate(self.board):
                     # don't move cards to same location
-                    # TODO: prevent cycles somehow?
                     if column_index == to_col_index:
                         continue
 
@@ -238,6 +233,7 @@ class FreeCell:
         return sorted(all_moves, key=lambda m: (-m.move_depth, m.priority))
 
     def execute_move(self, move:Move) -> None:
+        '''Executes a move on the board'''
         if move.from_location == 'board' and move.to_location == 'board':
             self.board[move.to_index].extend(self.board[move.from_index][-move.move_depth:])
             self.board[move.from_index] = self.board[move.from_index][:-move.move_depth:]
@@ -264,45 +260,6 @@ class FreeCell:
         '''Returns true if you have won the game'''
         return all(foundation.peek() and foundation.peek().value == 13 for foundation in self.foundations)
 
-    def solve(self) -> bool:
-        '''Solve the game'''
-        visited = set()
-        # counter is used to break ties in priority queue
-        counter = itertools.count()
-        pqueue = PriorityQueue()
-        pqueue.put((1, 1, self.copy()))
-        count = 0
-        while pqueue:
-            _, _, state = pqueue.get()
-            state_hash = state.generate_hash()
-
-            if state.check_win():
-                state.show()
-                solution = []
-                parent = state.parent
-                while parent:
-                    solution.append(parent)
-                    parent = parent.parent
-                return list(reversed(solution))
-
-            if state_hash in visited:
-                continue
-
-            count += 1
-            if count % 1000 == 0:
-                print(count)
-                state.show()
-
-            visited.add(state_hash)
-            for move in state.get_moves():
-                clone = state.copy()
-                clone.parent = state
-                clone.execute_move(move)
-                clone_hash = clone.generate_hash()
-                if clone_hash not in visited:
-                    pqueue.put((-clone.score(), -next(counter), clone))
-        return False
-
     def n_movable_cards(self) -> int:
         '''Returns the number of moveable cards given a board'''
         num_free_columns = sum(map(lambda col: len(col)==0, self.board))
@@ -310,7 +267,7 @@ class FreeCell:
         return (2**num_free_columns) * (num_free_spaces + 1)
 
     def generate_hash(self) -> str:
-        # return hashlib.sha256((str(self.free_spaces) + str(self.foundations) + str(self.board)).encode('utf-8')).hexdigest()
+        '''Generates a hash from the game state'''
         return hash(str(self.free_spaces) + str(self.foundations) + str(self.board))
 
     def show(self) -> None:
@@ -329,14 +286,8 @@ class FreeCell:
                     row.append(str(column[row_index]))
             print(''.join(row))
 
-    # def __deepcopy__(self, memodict={}):
-    #     copy_object = FreeCell()
-    #     copy_object.board = self.board.copy()
-    #     copy_object.foundations = self.foundations.copy()
-    #     copy_object.free_spaces = self.free_spaces.copy()
-    #     return copy_object
-
     def copy(self):
+        '''Return a copy of this object'''
         # return deepcopy(self)
         # return FreeCell(board=ujson.loads(ujson.dumps(self.board)), foundations=ujson.loads(ujson.dumps(self.foundations)), free_spaces=ujson.loads(ujson.dumps(self.free_spaces)))
         return FreeCell(board=deepcopy(self.board), foundations=deepcopy(self.foundations), free_spaces=deepcopy(self.free_spaces))
@@ -404,8 +355,8 @@ class FreeCell:
             try:
                 raw = input('How many cards would you like to move?')
                 move_depth = int(raw)
-            except:
-                raise MoveParserException(f'Could not parse move depth {raw}')
+            except ValueError as value_error:
+                raise MoveParserException(f'Could not parse move depth {raw}') from value_error
 
         return Move(from_location, from_index, to_location, to_index, move_depth=move_depth)
 
@@ -478,29 +429,126 @@ class FreeCell:
             return is_valid, reason
         return is_valid
 
-    def score(self) -> int:
+    def score(self, score_type, **kwargs) -> int:
         '''Generate a score for the current game state'''
+        # https://ai.dmi.unibas.ch/papers/paul-helmert-icaps2016wshsdip.pdf
         score = 0
-        for foundation in self.foundations:
-            top_card = foundation.peek()
-            if top_card:
-                score += 100*top_card.value
 
-        for free_space in self.free_spaces:
-            if free_space is None:
-                score += 10
+        if score_type == 'simple':
+            n_foundation_cards = 0
+            for foundation in self.foundations:
+                n_foundation_cards += foundation.ncards()
+            return 52 - n_foundation_cards
 
-        for column in self.board:
-            if column and column[0].value == 13:
-                score += 5
+        elif score_type == 'simple+':
+            n_foundation_cards = 0
+            for foundation in self.foundations:
+                n_foundation_cards += foundation.ncards()
+            move_count = 0
+            node = kwargs.get('node')
+            while node:
+                move_count += 1
+                node = node.parent
+            return (52 - n_foundation_cards) + move_count
+
+        elif score_type == 'bennaive':
+            for foundation in self.foundations:
+                top_card = foundation.peek()
+                if top_card:
+                    score -= 100*top_card.value
+
+            for free_space in self.free_spaces:
+                if free_space is None:
+                    score -= 10
+
+            for column in self.board:
+                if column and column[0].value == 13:
+                    score -= 5
+
+        elif score_type == 'experiment':
+            for foundation in self.foundations:
+                top_card = foundation.peek()
+                if top_card:
+                    score -= 1000*top_card.value
+
+            for free_space in self.free_spaces:
+                if free_space is None:
+                    score -= 10
+
+            for column in self.board:
+                counter = 0
+                tableau_sizes = []
+                for base_card, top_card in zip(column, column[1:]):
+                    if base_card.color != top_card.color and base_card.value == top_card.value + 1:
+                        counter += 1
+                    else:
+                        tableau_sizes.append(counter)
+                        counter = 0
+                tableau_sizes.append(counter)
+                score -= 5*max(tableau_sizes)
+
+            for column in self.board:
+                if column and column[0].value == 13:
+                    score -= 1
+
+            move_count = 0
+            node = kwargs.get('node')
+            while node:
+                move_count += 1
+                node = node.parent
+            score += move_count
+
         return score
 
-    def play(self) -> None:
+    def solve(self, score_type='bennaive') -> bool:
+        '''Solve the game'''
+        start_time = time.time()
+        visited = set()
+        # counter is used to break ties in priority queue
+        counter = itertools.count()
+        pqueue = PriorityQueue()
+        pqueue.put((1, 1, self.copy()))
+        count = 0
+        max_queue_size = 1
+        while pqueue:
+            max_queue_size = max(max_queue_size, pqueue.qsize())
+            _, _, state = pqueue.get()
+            state_hash = state.generate_hash()
+
+            if state.check_win():
+                total_time = round(time.time()-start_time, 2)
+                print(f'Solved in {total_time} seconds using {score_type}')
+                print(f'Expanded {count} nodes, with a maximum queue size of {max_queue_size}')
+                state.show()
+                solution = []
+                parent = state.parent
+                while parent:
+                    solution.append(parent)
+                    parent = parent.parent
+                return list(reversed(solution))
+
+            if state_hash in visited:
+                continue
+
+            visited.add(state_hash)
+            for move in state.get_moves():
+                clone = state.copy()
+                clone.parent = state
+                clone.execute_move(move)
+                clone_hash = clone.generate_hash()
+                count += 1
+
+                if clone_hash not in visited:
+                    pqueue.put((clone.score(score_type, node=clone), next(counter), clone))
+        return False
+
+    def play(self, print_moves=False) -> None:
         '''Play a command line version of the game'''
         n_moves = 0
         while not self.check_win():
-            for move in self.get_moves():
-                print(move)
+            if print_moves:
+                for move in self.get_moves():
+                    print(move)
             self.show()
             move_str = input('Execute Move: ')
             try:
@@ -520,25 +568,75 @@ class FreeCell:
 
         print(f'Congrats you won in {n_moves} moves!')
 
-if __name__ == "__main__":
-    with open('boards/board1.txt') as fh:
-        board_data = fh.read()
-    board = [[] for _ in range(8)]
-    cards = set()
-    for line in board_data.splitlines():
-        for column_index, card_str in enumerate(line.split(' ')):
-            board[column_index].append(Card.from_string(card_str))
-            cards.add(str(card_str))
-    if len(cards) != 52:
-        raise Exception(f'Bad deck size: {len(cards)}')
+    @staticmethod
+    def board_from_file(file_path) -> List[List[Card]]:
+        '''Creates a board from file'''
+        with open(file_path, 'r') as file_handle:
+            board_data = file_handle.read()
+        board = [[] for _ in range(8)]
+        cards = set()
+        for line in board_data.splitlines():
+            for column_index, card_str in enumerate(line.split(' ')):
+                board[column_index].append(Card.from_string(card_str))
+                cards.add(str(card_str))
+        if len(cards) != 52:
+            raise Exception(f'Bad deck size: {len(cards)}')
+        return board
+
+    @staticmethod
+    def random_board() -> List[List[Card]]:
+        '''Returns a random board'''
+        deck = []
+        for suit in ['spade', 'heart', 'club', 'diamond']:
+            for value in range(1,14):
+                deck.append(Card(value, suit))
+        shuffle(deck)
+
+        board = [[] for _ in range(8)]
+        for i, card in enumerate(deck):
+            board[i % 8].append(card)
+
+        return board
+
+def main():
+    '''Main code'''
+    # add parser options
+    parser = argparse.ArgumentParser(description='Do some Freecell stuff')
+    parser.add_argument('-f', '--file-path',type=str, nargs='?',
+        help='file path to load board from')
+    parser.add_argument('-p', '--play', action='store_true',
+        help='flag to interactively play game')
+    parser.add_argument('-v', '--verbose', action='store_true',
+        help='flag to print all moves when playing game')
+    parser.add_argument('-d', '--display-solution', action='store_true',
+        help='flag to show solution after solving')
+    parser.add_argument('-s', '--score-type', type=str, nargs='?',
+        default='bennaive', help='method used to score game states')
+    arguments = parser.parse_args()
+
+    # load board from file
+    if arguments.file_path:
+        board = FreeCell.board_from_file(arguments.file_path)
+    else:
+        board = FreeCell.random_board()
 
     game = FreeCell(board=board)
 
-    # game.play()
     game.show()
-    solution = game.solve()
-    print('SOLUTION', len(solution))
-    for state in solution:
-        state.show()
-        print('*************************')
-        _ = input()
+    if arguments.play:
+        game.play(print_moves=arguments.verbose)
+    else:
+        if arguments.score_type:
+            solution = game.solve(score_type=arguments.score_type)
+        else:
+            solution = game.solve()
+
+        print('Number of turns in solution:', len(solution))
+        if arguments.display_solution:
+            for state in solution:
+                state.show()
+                print('*************************')
+                _ = input('Press Enter to Show Next Step')
+
+if __name__ == "__main__":
+    main()
